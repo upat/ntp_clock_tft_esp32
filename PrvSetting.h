@@ -70,8 +70,8 @@ extern _FLAG  err_flag;
 #define flag_adjustsync ( flag.fb.bit02 ) /* 初回起動時に0分0秒でNTP更新周期を再設定するフラグ */
 #define flag_hour_digit ( flag.fb.bit03 ) /* 時間表示時に時間の桁数によってカーソル位置の調整に使用するフラグ */
 
-#define flag_wifiinit_err ( err_flag.fb.bit08 )
-#define flag_udpbegin_err ( err_flag.fb.bit07 )
+#define flag_wifiinit_err ( err_flag.fb.bit08 ) /* wifi接続エラー判定フラグ */
+#define flag_udpbegin_err ( err_flag.fb.bit07 ) /* udp接続エラー判定フラグ */
 
 /* 定数定義 */
 #define AP_SSID "" /* 接続するルーターのSSID */
@@ -87,9 +87,7 @@ extern _FLAG  err_flag;
 #define SCREEN_HEIGHT 240 /* TFTの縦のピクセル数 */
 #define TFT_RST       16  /* TFTのリセット端子(無い場合は0) */
 
-#define CGI_URL1 "" /* CGI URLその1 */
-#define CGI_URL2 "" /* CGI URLその2 */
-#define CGI_URL3 "" /* CGI URLその3 */
+#define HTTP_URL "" /* HTTPサーバー用(test) */
 
 #define UDP_DEFAULT   "----.-hPa --% --.-" /* UDP受信データ初期値 */
 #define DAY_FORMAT    "%04d/%02d/%02d"     /* 年月日フォーマット */

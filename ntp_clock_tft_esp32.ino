@@ -25,16 +25,18 @@ time_t now_data = 0;
 /* UDP通信用 */
 char udp_buff[24] = {};
 /* テキスト色設定 */
-uint16_t text_color = ILI9341_DARKCYAN;
+uint16_t text_color = ILI9341_ORANGE;
 
 uint8_t  wifi_init( void );
 void     set_display( uint8_t h_data, uint8_t m_data, uint8_t s_data );
 void     read_sensor( void );
 void     udp_rcv( void );
 uint16_t str_position( uint16_t str_length, uint16_t unit_length );
-void     run_cgi( String url );
 void     tft_wake( void );
 void     tft_sleep( void );
+void     post_req( String request_data );
+void     deepsleep_jdg( uint8_t h_data, uint8_t w_data );
+uint16_t count_char( char *str, uint8_t str_size );
 time_t  getNtpTime( void );
 void     sendNTPpacket( const char* address );
 
@@ -83,29 +85,26 @@ void setup()
     tft.println( err_flag.all_bits, HEX );
 
     /* 処理を開始せずソフトウェアリセット */
-    for(;;)
-    { 
-      delay( 3000 );
-      ESP.restart();
-      delay( 3000 ); /* 未到達 */
-    }
+    delay( 1000 );
+    ESP.restart();
+    delay( 5000 ); /* 未到達 */
   }
   else
-  { 
-    tft.fillScreen( ILI9341_BLACK ); /* 画面表示クリア */
-    
-    sprintf( udp_buff, "%s", UDP_DEFAULT );
-    run_cgi( CGI_URL1 );
-    
-    /* 成功時 */
+  {
     setSyncProvider( getNtpTime ); /* 補正に使用する関数設定 */
     setSyncInterval( 3600 );       /* 時刻補正を行う周期設定(秒) 後で調整 */
 
     /* 平日の祝日か */
     flag_holidayjdg = get_daydata( ( uint8_t )month( now() ), day( now() ) );
-    
+
     /* 温湿度データの取得(初回) */
     read_sensor();
+
+    /* スリープ判定処理 */
+    deepsleep_jdg( hour( now() ), weekday( now() ) );
+
+    sprintf( udp_buff, "%s", UDP_DEFAULT );
+    post_req( "weather" );
   }
 }
 
@@ -126,38 +125,10 @@ void loop()
     s_data = second( now_data );
 
     /* スリープ判定処理 */
-    if(
-      8 < h_data &&
-      19 > h_data &&
-      1 < w_data &&
-      7 > w_data &&
-      !flag_holidayjdg
-    )
-    //if( 38 == m_data && 0 == s_data && !public_holiday )
-    {
-      /* サーバー停止処理 */
-      if( 31.0 < temp )
-      {
-        run_cgi( CGI_URL3 );
-      }
-      
-      /* 画面のスリープ処理 */
-      tft.fillScreen( ILI9341_BLACK );
-      tft_sleep();
-      ledcWrite( 0, 0 ); /* バックライト消灯 */
-      
-      /* deep-sleep */
-      Serial.println( "deep-sleep start" );
-      esp_sleep_enable_timer_wakeup( ( uint32_t )( 1800 * 1000 * 1000 ) );
-      Serial.flush(); 
-      esp_deep_sleep_start();
-      delay( 1000 );
-    }
-    else
-    {
-      /* 画面表示 */
-      set_display( h_data, m_data, s_data );
-    }
+    deepsleep_jdg( h_data, w_data );
+
+    /* 画面表示 */
+    set_display( h_data, m_data, s_data );
 
     /* 1分ごとに温湿度更新 */
     if( UPDATE_MIN_PRE == s_data )
@@ -219,7 +190,7 @@ uint8_t wifi_init( void )
   return 0;
 }
 
-/* OLEDに描画する関数 */
+/* TFTに描画する関数 */
 void set_display( uint8_t h_data, uint8_t m_data, uint8_t s_data )
 {
   /* 前回値 */
@@ -232,6 +203,13 @@ void set_display( uint8_t h_data, uint8_t m_data, uint8_t s_data )
   char day_data[12] = {};
   char time_data[12] = {};
   char sensor_data[12] = {};
+
+  /* 画面上の文字の長さ */
+  uint16_t udp_strlen = 0;
+  uint16_t sensor_strlen = 0;
+  /* 中央寄せに使用するカーソル開始位置 */
+  uint16_t udp_cursor = 0;
+  uint16_t sensor_cursor = 0;
 
   /* 日時の表示 */
   if( day_pre != day( now_data ) )
@@ -267,22 +245,19 @@ void set_display( uint8_t h_data, uint8_t m_data, uint8_t s_data )
     /* 表示文字列の作成(温湿度) */
     sprintf( sensor_data, SENSOR_FORMAT, humi, temp );
 
-    /* 文字数取得 */
-    String udp_str = udp_buff;
-    String sensor_str = sensor_data;
     /* 画面上の文字の長さ */
-    uint16_t udp_strlen = udp_str.length() * 12;
-    uint16_t sensor_strlen = sensor_str.length() * 18;
+    udp_strlen = count_char( udp_buff, sizeof( udp_buff ) ) * 12;
+    sensor_strlen = count_char( sensor_data, sizeof( sensor_data ) ) * 18;
     /* 中央寄せに使用するカーソル開始位置 */
-    uint16_t udp_cursor = str_position( udp_strlen, 10 );
-    uint16_t sensor_cursor = str_position( sensor_strlen, 18 );
+    udp_cursor = str_position( udp_strlen, 10 );
+    sensor_cursor = str_position( sensor_strlen, 18 );
 
     /* 文字数が異なる場合のリフレッシュ */
-    if( ( udpstr_pre != udp_str.length() ) || ( ssrstr_pre != sensor_str.length() ) )
+    if( ( udpstr_pre != udp_strlen ) || ( ssrstr_pre != sensor_strlen ) )
     {
       tft.fillRect( 0, 70, 320, 50, ILI9341_BLACK ); /* 温度情報の画面表示クリア */
-      udpstr_pre = udp_str.length();                 /* UDP受信文字数の前回値更新 */
-      ssrstr_pre = sensor_str.length();              /* センサー読み取り文字数の前回値更新 */
+      udpstr_pre = udp_strlen;                       /* UDP受信文字数の前回値更新 */
+      ssrstr_pre = sensor_strlen;                    /* センサー読み取り文字数の前回値更新 */
     }
     
     /* 気温のデータをセット(文字サイズ:2) */
@@ -373,27 +348,6 @@ uint16_t str_position( uint16_t str_length, uint16_t unit_length )
   return ( half_width - half_strlen );
 }
 
-/* CGI実行 */
-void run_cgi( String url )
-{
-  HTTPClient client;
-
-  int http_get;
-
-  /* タイムアウト時間の設定(15s) */
-  client.setTimeout( 300 );
-  
-  client.begin( url );
-  http_get = client.GET();
-
-  if( 0 > http_get )
-  {
-    Serial.println( client.errorToString( http_get ) );
-  }
-
-  client.end();
-}
-
 /* TFTウェイク処理 */
 void tft_wake( void )
 {
@@ -420,6 +374,76 @@ void tft_sleep( void )
   delay( 120 );
 
   tft.endWrite();
+}
+
+/* サーバーへPOSTリクエスト */
+void post_req( String request_data )
+{
+  HTTPClient http;
+
+  /* タイムアウト時間の設定 */
+  http.setTimeout( 300 );
+
+  http.begin( HTTP_URL );
+  int httpCode = http.POST( request_data );
+
+  //Serial.print( "Response: " );
+  //Serial.println( httpCode );
+  
+  if ( httpCode == HTTP_CODE_OK ) {
+    String body = http.getString();
+    //Serial.print( "Response Body: " );
+    //Serial.println( body );
+  }
+}
+
+/* 平日の日中にdeep-sleepを行う判定処理 */
+void deepsleep_jdg( uint8_t h_data, uint8_t w_data )
+{
+  if(
+    8 < h_data &&
+    19 > h_data &&
+    1 < w_data &&
+    7 > w_data &&
+    !flag_holidayjdg
+  )
+  //if( 38 == m_data && 0 == s_data && !public_holiday )
+  {
+    /* サーバー停止処理 */
+    post_req( String( ( int )temp ) + "℃"  ); /* スリープ時の室温 */
+    if( 31 < ( int )temp )
+    {
+      post_req( "temp_alert" ); /* サーバー停止要求 */
+    }
+    
+    /* 画面のスリープ処理 */
+    tft.fillScreen( ILI9341_BLACK );
+    tft_sleep();
+    ledcWrite( 0, 0 ); /* バックライト消灯 */
+    
+    /* deep-sleep */
+    esp_sleep_enable_timer_wakeup( ( uint32_t )( 1800 * 1000 * 1000 ) ); 
+    esp_deep_sleep_start();
+    delay( 3000 ); /* 未到達 */
+  }
+}
+
+/* char型文字数のカウント */
+uint16_t count_char( char *str, uint8_t str_size )
+{
+  uint16_t count = 0; /* 文字数カウンタ */
+
+  /* 終端文字を含めずにカウント */
+  for( uint8_t i = 0; i < str_size; i++ )
+  {
+    if( str[i] == '\0' )
+    {
+      break;
+    }
+    count++;
+  }
+
+  return count;
 }
 
 /***

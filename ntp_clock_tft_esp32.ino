@@ -25,6 +25,7 @@ void     adjust_syncinterval( void );
 void     tft_wake( void );
 void     tft_sleep( void );
 void     deepsleep_jdg( uint8_t h_data, uint8_t w_data );
+time_t   getNtpTime( void );
 
 void setup()
 {
@@ -328,4 +329,29 @@ void deepsleep_jdg( uint8_t h_data, uint8_t w_data )
     esp_deep_sleep_start();
     delay( 3000 ); /* 未到達 */
   }
+}
+
+/*** Timeライブラリのサンプルコードから移植 ***/
+time_t getNtpTime()
+{
+  while ( UDP_NTP.parsePacket() > 0 ) ; // discard any previously received packets
+  // Serial.println( "Transmit NTP Request" );
+  sendNTPpacket( TIME_SERVER );
+  uint32_t beginWait = millis();
+  while ( millis() - beginWait < 1500 ) {
+    int size = UDP_NTP.parsePacket();
+    if ( size >= NTP_PACKET_SIZE ) {
+      // Serial.println( "Receive NTP Response" );
+      UDP_NTP.read( packetBuffer, NTP_PACKET_SIZE );  // read packet into the buffer
+      unsigned long secsSince1900;
+      // convert four bytes starting at location 40 to a long integer
+      secsSince1900 =  ( unsigned long )packetBuffer[40] << 24;
+      secsSince1900 |= ( unsigned long )packetBuffer[41] << 16;
+      secsSince1900 |= ( unsigned long )packetBuffer[42] << 8;
+      secsSince1900 |= ( unsigned long )packetBuffer[43];
+      return secsSince1900 - 2208988800UL + TIME_ZONE * 3600;
+    }
+  }
+  // Serial.println("No NTP Response :-(");
+  return 0; // return 0 if unable to get the time
 }

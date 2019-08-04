@@ -1,22 +1,14 @@
-#include <WiFi.h>
-#include <WiFiUDP.h>
-#include <HTTPClient.h>
-#include <SPI.h>
+#include "NTP_Clock_Tools.h"
 
+#include <SPI.h>
 #include <DHT.h>
 #include <TimeLib.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ILI9341.h>
 
-#include "PrvSetting.h"
-
-Adafruit_ILI9341 tft = Adafruit_ILI9341( 5, 17, TFT_RST );
-WiFiUDP UDP_NTP;
-WiFiUDP UDP_RCV;
+Adafruit_ILI9341 tft = Adafruit_ILI9341( 5, 17, 16 ); /* CS, DC, RESET */
 DHT dht( 33, DHT11 );
 
-/* 曜日変換用の文字列 */
-const char week_day[7][8] = { "(SUN)", "(MON)", "(TUE)", "(WED)", "(THU)", "(FRI)", "(SAT)" };
 /* 温湿度データ */
 float humi = 0.0;
 float temp = 0.0;
@@ -27,18 +19,12 @@ char udp_buff[24] = {};
 /* テキスト色設定 */
 uint16_t text_color = ILI9341_ORANGE;
 
-uint8_t  wifi_init( void );
 void     set_display( uint8_t h_data, uint8_t m_data, uint8_t s_data );
 void     read_sensor( void );
-void     udp_rcv( void );
-uint16_t str_position( uint16_t str_length, uint16_t unit_length );
+void     adjust_syncinterval( void );
 void     tft_wake( void );
 void     tft_sleep( void );
-void     post_req( String request_data );
 void     deepsleep_jdg( uint8_t h_data, uint8_t w_data );
-uint16_t count_char( char *str, uint8_t str_size );
-time_t  getNtpTime( void );
-void     sendNTPpacket( const char* address );
 
 void setup()
 {
@@ -52,7 +38,7 @@ void setup()
   ledcAttachPin( A4, 0 );   /* IO32にch0を割り当て */
   ledcWrite( 0, 128 );      /* ch0からPWM出力 */
 
-  Serial.begin( SERIAL_ESP32 );
+  Serial.begin( SERIAL_SPEED );
   
   /* 温湿度センサーの開始 */
   dht.begin();
@@ -61,7 +47,7 @@ void setup()
   flag_wifiinit_err = wifi_init();
 
   /* UDP通信の開始 */
-  if( !UDP_NTP.begin( NTP_PORT ) || !UDP_RCV.begin( DATA_RCV_PORT ) )
+  if( !UDP_NTP.begin( NTP_PORT ) || !UDP_RCV.begin( data_rcv_port[0] ) )
   {
     /* 失敗時 */
     flag_udpbegin_err = 1;
@@ -151,43 +137,10 @@ void loop()
     }
 
     /* UDP受信確認 */
-    udp_rcv();
+    udp_rcv( udp_buff );
   }
 
   delay( 100 );
-}
-
-/* wi-fiの初期化関数 */
-uint8_t wifi_init( void )
-{
-  /* 子機側に設定 */
-  WiFi.mode( WIFI_STA );
-  
-  if( !WiFi.begin( AP_SSID, AP_PASS ) )
-  {
-    /* 失敗時 */
-    return 1;
-  }
-
-  /* wi-fiの接続待ち */
-  for( uint8_t loop = 0; loop < 10; loop++ )
-  {
-    if( WL_CONNECTED == WiFi.status() )
-    {
-      /* 成功時 */
-      break; /* 接続できたらループ終了 */
-    }
-    delay( 500 );
-  }
-
-  if( WL_CONNECTED != WiFi.status() )
-  {
-    /* 失敗時 */
-    return 1;
-  }
-
-  /* 成功時(未到達) */
-  return 0;
 }
 
 /* TFTに描画する関数 */
@@ -249,8 +202,8 @@ void set_display( uint8_t h_data, uint8_t m_data, uint8_t s_data )
     udp_strlen = count_char( udp_buff, sizeof( udp_buff ) ) * 12;
     sensor_strlen = count_char( sensor_data, sizeof( sensor_data ) ) * 18;
     /* 中央寄せに使用するカーソル開始位置 */
-    udp_cursor = str_position( udp_strlen, 10 );
-    sensor_cursor = str_position( sensor_strlen, 18 );
+    udp_cursor = str_position( 320, udp_strlen, 10 );
+    sensor_cursor = str_position( 320, sensor_strlen, 18 );
 
     /* 文字数が異なる場合のリフレッシュ */
     if( ( udpstr_pre != udp_strlen ) || ( ssrstr_pre != sensor_strlen ) )
@@ -305,24 +258,6 @@ void read_sensor( void )
   temp = dht.readTemperature();
 }
 
-/* UDP受信処理関数 */
-void udp_rcv( void )
-{
-  /* UDPのデータ長 */
-  int udp_len = 0;
-  
-  if( 0 < UDP_RCV.parsePacket() )
-  {
-    udp_len = UDP_RCV.read( udp_buff, 24 );
-
-    if( 0 < udp_len )
-    {
-      // Serial.println("Get Temperature Data");
-      udp_buff[udp_len] = '\0';
-    }
-  }
-}
-
 /* 一度だけNTP取得時間の調整 */
 void adjust_syncinterval( void )
 {
@@ -334,18 +269,6 @@ void adjust_syncinterval( void )
     flag_adjustsync = 0;
     Serial.println( "Adjust SyncInterval" );
   }
-}
-
-/* TFT上の文字列を中央寄せに調整する */
-uint16_t str_position( uint16_t str_length, uint16_t unit_length )
-{
-  uint16_t half_width = 0;
-  uint16_t half_strlen = 0;
-  
-  half_width = ( SCREEN_WIDTH - unit_length ) / 2;
-  half_strlen = str_length / 2;
-
-  return ( half_width - half_strlen );
 }
 
 /* TFTウェイク処理 */
@@ -374,27 +297,6 @@ void tft_sleep( void )
   delay( 120 );
 
   tft.endWrite();
-}
-
-/* サーバーへPOSTリクエスト */
-void post_req( String request_data )
-{
-  HTTPClient http;
-
-  /* タイムアウト時間の設定 */
-  http.setTimeout( 300 );
-
-  http.begin( HTTP_URL );
-  int httpCode = http.POST( request_data );
-
-  //Serial.print( "Response: " );
-  //Serial.println( httpCode );
-  
-  if ( httpCode == HTTP_CODE_OK ) {
-    String body = http.getString();
-    //Serial.print( "Response Body: " );
-    //Serial.println( body );
-  }
 }
 
 /* 平日の日中にdeep-sleepを行う判定処理 */
@@ -427,84 +329,3 @@ void deepsleep_jdg( uint8_t h_data, uint8_t w_data )
     delay( 3000 ); /* 未到達 */
   }
 }
-
-/* char型文字数のカウント */
-uint16_t count_char( char *str, uint8_t str_size )
-{
-  uint16_t count = 0; /* 文字数カウンタ */
-
-  /* 終端文字を含めずにカウント */
-  for( uint8_t i = 0; i < str_size; i++ )
-  {
-    if( str[i] == '\0' )
-    {
-      break;
-    }
-    count++;
-  }
-
-  return count;
-}
-
-/***
-
-ここから下記コードを使用(一部変数の型などを変更しています)
-ttps://github.com/PaulStoffregen/Time/blob/master/examples/TimeNTP/TimeNTP.ino
-
-***/
-
-const int NTP_PACKET_SIZE = 48; // NTP time is in the first 48 bytes of message
-byte packetBuffer[NTP_PACKET_SIZE]; //buffer to hold incoming & outgoing packets
-
-time_t getNtpTime()
-{
-  while (UDP_NTP.parsePacket() > 0) ; // discard any previously received packets
-  Serial.println("Transmit NTP Request");
-  sendNTPpacket(TIME_SERVER);
-  uint32_t beginWait = millis();
-  while (millis() - beginWait < 1500) {
-    int size = UDP_NTP.parsePacket();
-    if (size >= NTP_PACKET_SIZE) {
-      // Serial.println("Receive NTP Response");
-      UDP_NTP.read(packetBuffer, NTP_PACKET_SIZE);  // read packet into the buffer
-      unsigned long secsSince1900;
-      // convert four bytes starting at location 40 to a long integer
-      secsSince1900 =  (unsigned long)packetBuffer[40] << 24;
-      secsSince1900 |= (unsigned long)packetBuffer[41] << 16;
-      secsSince1900 |= (unsigned long)packetBuffer[42] << 8;
-      secsSince1900 |= (unsigned long)packetBuffer[43];
-      return secsSince1900 - 2208988800UL + TIME_ZONE * SECS_PER_HOUR;
-    }
-  }
-  Serial.println("No NTP Response :-(");
-  return 0; // return 0 if unable to get the time
-}
-
-// send an NTP request to the time server at the given address
-void sendNTPpacket(const char* address)
-{
-  // set all bytes in the buffer to 0
-  memset(packetBuffer, 0, NTP_PACKET_SIZE);
-  // Initialize values needed to form NTP request
-  // (see URL above for details on the packets)
-  packetBuffer[0] = 0b11100011;   // LI, Version, Mode
-  packetBuffer[1] = 0;     // Stratum, or type of clock
-  packetBuffer[2] = 6;     // Polling Interval
-  packetBuffer[3] = 0xEC;  // Peer Clock Precision
-  // 8 bytes of zero for Root Delay & Root Dispersion
-  packetBuffer[12]  = 49;
-  packetBuffer[13]  = 0x4E;
-  packetBuffer[14]  = 49;
-  packetBuffer[15]  = 52;
-  // all NTP fields have been given values, now
-  // you can send a packet requesting a timestamp:                 
-  UDP_NTP.beginPacket(address, 123); //NTP requests are to port 123
-  UDP_NTP.write(packetBuffer, NTP_PACKET_SIZE);
-  UDP_NTP.endPacket();
-}
-
-/***
-
-ここまで
-
-***/
